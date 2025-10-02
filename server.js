@@ -10,6 +10,11 @@ app.use(express.json({ limit: "1mb" }));
 app.use(helmet());
 app.use(rateLimit({ windowMs: 60_000, max: 20 }));
 
+// raiz responde algo simples (evita "Application loading")
+app.get("/", (_,res)=>res.type("text/plain").send("ok"));
+
+app.get("/health", (_,res)=>res.json({ ok: true }));
+
 const ORIGIN = "https://www.radarsebrae.com.br";
 
 async function withBrowser(fn) {
@@ -31,9 +36,7 @@ async function withBrowser(fn) {
     throw e;
   }
 }
-const Local = z.object({ uf: z.string().length(2), municipio: z.string().min(2) });
-
-async function waitStable(page) {
+async function waitStable(page){
   await page.goto(ORIGIN, { waitUntil: "domcontentloaded" });
   await page.waitForLoadState("networkidle").catch(()=>{});
 }
@@ -48,19 +51,18 @@ async function setLocal(page, uf, municipio){
   await munField.fill(municipio).catch(()=>{});
 }
 
-app.get("/health", (_,res)=>res.json({ok:true}));
+const Body = z.object({
+  tipo: z.enum(["opportunities","demographics","competition"]),
+  uf: z.string().length(2),
+  municipio: z.string().min(2),
+  setor: z.string().optional(),
+  termo: z.string().optional(),
+  cnae: z.string().optional(),
+  raio_km: z.number().optional()
+});
 
 app.post("/api/radar", async (req,res)=>{
-  const body = z.object({
-    tipo: z.enum(["opportunities","demographics","competition"]),
-    uf: z.string().length(2),
-    municipio: z.string().min(2),
-    setor: z.string().optional(),
-    termo: z.string().optional(),
-    cnae: z.string().optional(),
-    raio_km: z.number().optional()
-  }).parse(req.body);
-
+  const body = Body.parse(req.body);
   try{
     const data = await pRetry(()=>withBrowser(async(page)=>{
       await waitStable(page);
@@ -78,7 +80,6 @@ app.post("/api/radar", async (req,res)=>{
           await termo.fill(body.termo).catch(()=>{});
         }
         await clickSearch(page);
-
         const rows = await page.locator("table tbody tr").all().catch(()=>[]);
         let resultados=[];
         if(rows.length){
@@ -99,7 +100,6 @@ app.post("/api/radar", async (req,res)=>{
         await page.waitForLoadState("networkidle").catch(()=>{});
         await setLocal(page, body.uf, body.municipio);
         await clickSearch(page);
-
         const sections = await page.locator("section,[role='region']").all().catch(()=>[]);
         const paineis=[];
         for(const s of sections){
@@ -111,7 +111,7 @@ app.post("/api/radar", async (req,res)=>{
           }
           if(paineis.length>40) break;
         }
-        return { origem:"demographics", filtros: Local.parse(body), paineis };
+        return { origem:"demographics", filtros:{ uf:body.uf, municipio:body.municipio }, paineis };
       }
 
       if(body.tipo==="competition"){
@@ -127,7 +127,6 @@ app.post("/api/radar", async (req,res)=>{
           await raio.fill(String(body.raio_km)).catch(()=>{});
         }
         await clickSearch(page);
-
         const rows = await page.locator("table tbody tr").all().catch(()=>[]);
         let empresas=[];
         if(rows.length){
@@ -153,4 +152,4 @@ app.post("/api/radar", async (req,res)=>{
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT);
+app.listen(PORT, "0.0.0.0", ()=>console.log("up:"+PORT));
